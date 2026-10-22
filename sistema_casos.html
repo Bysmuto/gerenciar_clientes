@@ -1,0 +1,1381 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sistema de Casos</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      :root {
+        --bg-main: #f8f6f0;
+        --bg-card: #ffffff;
+        --border-color: #e3decb;
+        --text-main: #2b2621;
+        --text-muted: #6b6155;
+        --accent-dark: #3b2d24;
+        --accent-hover: #4f3d32;
+      }
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
+        background-color: var(--bg-main);
+        color: var(--text-main);
+      }
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #efece4;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #c8bead;
+        border-radius: 3px;
+      }
+      @media print {
+        aside {
+          display: none !important;
+        }
+        body,
+        main {
+          overflow: visible !important;
+          height: auto !important;
+          background-color: white !important;
+        }
+        .no-print {
+          display: none !important;
+        }
+        input,
+        select {
+          border: none !important;
+          background: transparent !important;
+          color: black !important;
+        }
+        textarea {
+          border: none !important;
+          background: transparent !important;
+          resize: none !important;
+          color: black !important;
+          height: max-content !important;
+          overflow: visible !important;
+          white-space: pre-wrap !important;
+        }
+        .shadow-sm {
+          box-shadow: none !important;
+          border: 1px solid #ccc !important;
+        }
+      }
+    </style>
+  </head>
+  <body class="h-screen flex overflow-hidden">
+    <!-- BARRA LATERAL -->
+    <aside class="w-72 bg-[#f4f0e6] border-r border-[#e3decb] flex flex-col shrink-0">
+      <div class="p-3 space-y-1.5 border-b border-[#e3decb]">
+        <button
+          onclick="selectView('HOME')"
+          id="btnHome"
+          class="w-full text-left px-3 py-2.5 rounded text-sm font-medium transition"
+        >
+          Registrar
+        </button>
+        <button
+          onclick="selectView('ALL_PENDING')"
+          id="btnAllPending"
+          class="w-full text-left px-3 py-2.5 rounded text-sm font-medium flex items-center justify-between transition"
+        >
+          <span>A fazer</span>
+          <span
+            id="totalPendingBadge"
+            class="bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 rounded text-xs font-semibold"
+            >0</span
+          >
+        </button>
+        <button
+          onclick="selectView('ALL_HISTORY')"
+          id="btnAllHistory"
+          class="w-full text-left px-3 py-2.5 rounded text-sm font-medium transition"
+        >
+          Histórico
+        </button>
+      </div>
+
+      <div class="px-3 pt-3 pb-1 text-xs font-semibold uppercase tracking-wider text-[#6b6155]">
+        Clientes
+      </div>
+      <div id="clientTree" class="flex-1 overflow-y-auto px-2 pb-4 space-y-1"></div>
+    </aside>
+
+    <!-- ÁREA PRINCIPAL -->
+    <main id="mainContent" class="flex-1 overflow-y-auto p-6 md:p-8"></main>
+
+    <script>
+      const STORAGE_KEY = "sistema_juridico_minimal_v4";
+
+      function loadState() {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) return JSON.parse(saved);
+        return { clients: {} };
+      }
+
+      let state = loadState();
+      let currentView = "HOME"; // 'HOME' | 'ALL_PENDING' | 'CLIENT'
+      let activeClient = null;
+      let activeSubfolder = null; // null = cliente direto (sem subpastas) ou 'GERAL' (consolidado quando há subpastas) ou nome da subpasta
+      let expandedClients = {};
+      let homeTab = "TAREFA"; // 'TAREFA' | 'HISTORICO' | 'ARQUIVO' | 'CLIENTE'
+      let showNewSubfolderInput = false;
+
+      let draggedClientName = null;
+
+      function getClientOrder() {
+        let order = state.clientOrder || [];
+        const current = Object.keys(state.clients);
+        current.forEach((c) => {
+          if (!order.includes(c)) order.push(c);
+        });
+        order = order.filter((c) => current.includes(c));
+        state.clientOrder = order;
+        return order;
+      }
+
+      function toggleSubfolderComplete(cName, sfName) {
+        const sf = state.clients[cName].subfolders[sfName];
+        sf.status = sf.status === "COMPLETO" ? "ATIVO" : "COMPLETO";
+        saveState();
+        renderSidebar();
+        renderMain();
+      }
+
+      function removeSubfolder(cName, sfName) {
+        if (
+          confirm(`Tem certeza que deseja apagar a subpasta "${sfName}" e todo o seu conteúdo?`)
+        ) {
+          delete state.clients[cName].subfolders[sfName];
+          activeSubfolder = "GERAL";
+          saveState();
+          renderSidebar();
+          renderMain();
+        }
+      }
+
+      function onDragStartClient(e, cName) {
+        draggedClientName = cName;
+      }
+      function onDragOverClient(e) {
+        e.preventDefault();
+      }
+      function onDropClient(e, targetClientName) {
+        e.preventDefault();
+        if (!draggedClientName || draggedClientName === targetClientName) return;
+        const order = getClientOrder();
+        const fromIdx = order.indexOf(draggedClientName);
+        const toIdx = order.indexOf(targetClientName);
+        order.splice(fromIdx, 1);
+        order.splice(toIdx, 0, draggedClientName);
+        state.clientOrder = order;
+        saveState();
+        renderSidebar();
+      }
+
+      function saveState() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        renderSidebar();
+      }
+
+      function exportData() {
+        const dataStr = JSON.stringify(state, null, 2);
+        const blob = new Blob([dataStr], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "backup_sistema.json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      function importData(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function (e) {
+          try {
+            const importedState = JSON.parse(e.target.result);
+            if (importedState && importedState.clients) {
+              state = importedState;
+              saveState();
+              renderMain();
+              alert("Dados JSON carregados com sucesso!");
+            } else {
+              alert("Arquivo JSON inválido para o sistema.");
+            }
+          } catch (err) {
+            alert("Erro ao ler o arquivo JSON.");
+          }
+        };
+        reader.readAsText(file);
+        event.target.value = "";
+      }
+
+      function todayBR() {
+        const d = new Date();
+        return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+      }
+
+      function todayISO() {
+        return todayBR().split("/").reverse().join("-");
+      }
+
+      function isoToBR(iso) {
+        return iso.split("-").reverse().join("/");
+      }
+
+      function dmyKey(d) {
+        const [dd, mm, yy] = d.split("/");
+        return yy + mm + dd;
+      }
+
+      function doneDate(ev) {
+        return ev.doneDate || ev.date;
+      }
+
+      function doneLabel(ev) {
+        if (!ev.doneDate) return ev.date;
+        return `Concluído em ${ev.doneDate} <span class="font-normal">(criada em ${ev.date})</span>`;
+      }
+
+      function money(v) {
+        return Number(v).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+      }
+
+      function sortByDeadline(items) {
+        return [...items].sort((a, b) => {
+          if (a.deadline && b.deadline) return a.deadline.localeCompare(b.deadline);
+          if (a.deadline) return -1;
+          if (b.deadline) return 1;
+          return 0;
+        });
+      }
+
+      function deadlineInput(cName, ev) {
+        const late = ev.deadline && ev.deadline < todayISO();
+        return `
+        <label class="text-[11px] font-semibold ${late ? "text-[#9b2c2c]" : "text-[#6b6155]"}">Prazo:
+          <input type="date" value="${ev.deadline || ""}"
+            onchange="setDeadline('${cName}', '${ev._origin || ""}', '${ev.id}', this.value)"
+            class="text-[11px] px-1.5 py-0.5 rounded border ${late ? "border-[#f5c6c6] text-[#9b2c2c]" : "border-[#d6cebc] text-[#2b2621]"} bg-white" />
+        </label>
+      `;
+      }
+
+      function isPendingStatus(status) {
+        return ["A FAZER", "EM ESPERA", "EM ANDAMENTO"].includes((status || "").toUpperCase());
+      }
+
+      function hasSubfolders(clientObj) {
+        return clientObj && clientObj.subfolders && Object.keys(clientObj.subfolders).length > 0;
+      }
+
+      function getConsolidatedClientData(clientObj) {
+        const allEvents = [];
+        const allFiles = [];
+
+        (clientObj.events || []).forEach((ev) => {
+          allEvents.push({ ...ev, _origin: null });
+        });
+        (clientObj.files || []).forEach((f, idx) => {
+          allFiles.push({ ...f, _origin: null, _idx: idx });
+        });
+
+        Object.keys(clientObj.subfolders || {}).forEach((sfName) => {
+          const sf = clientObj.subfolders[sfName];
+          (sf.events || []).forEach((ev) => {
+            allEvents.push({ ...ev, _origin: sfName });
+          });
+          (sf.files || []).forEach((f, idx) => {
+            allFiles.push({ ...f, _origin: sfName, _idx: idx });
+          });
+        });
+
+        return { events: allEvents, files: allFiles };
+      }
+
+      function statusBadgeStyle(status) {
+        const s = (status || "").toUpperCase();
+        if (s === "A FAZER") return "bg-[#fae8e8] text-[#9b2c2c] border-[#f5c6c6]";
+        if (s === "EM ESPERA") return "bg-[#fef3c7] text-[#92400e] border-[#fde68a]";
+        if (s === "EM ANDAMENTO") return "bg-[#e0f2fe] text-[#0369a1] border-[#bae6fd]";
+        return "bg-[#d1fae5] text-[#065f46] border-[#a7f3d0]";
+      }
+
+      function renderSidebar() {
+        const tree = document.getElementById("clientTree");
+        tree.innerHTML = "";
+
+        let totalPending = 0;
+        Object.values(state.clients).forEach((cl) => {
+          const consolidated = getConsolidatedClientData(cl);
+          consolidated.events.forEach((ev) => {
+            if (isPendingStatus(ev.status)) totalPending++;
+          });
+        });
+        document.getElementById("totalPendingBadge").textContent = totalPending;
+
+        const btnHome = document.getElementById("btnHome");
+        btnHome.className =
+          currentView === "HOME"
+            ? "w-full text-left px-3 py-2 rounded text-sm font-semibold bg-[#3b2d24] text-white"
+            : "w-full text-left px-3 py-2 rounded text-sm font-medium text-[#2b2621] hover:bg-[#eae5dc]";
+
+        const btnAll = document.getElementById("btnAllPending");
+        btnAll.className =
+          currentView === "ALL_PENDING"
+            ? "w-full text-left px-3 py-2 rounded text-sm font-semibold bg-[#3b2d24] text-white flex items-center justify-between"
+            : "w-full text-left px-3 py-2 rounded text-sm font-medium text-[#2b2621] hover:bg-[#eae5dc] flex items-center justify-between";
+
+        const btnHist = document.getElementById("btnAllHistory");
+        btnHist.className =
+          currentView === "ALL_HISTORY"
+            ? "w-full text-left px-3 py-2 rounded text-sm font-semibold bg-[#3b2d24] text-white"
+            : "w-full text-left px-3 py-2 rounded text-sm font-medium text-[#2b2621] hover:bg-[#eae5dc]";
+
+        getClientOrder().forEach((cName) => {
+          const client = state.clients[cName];
+          const clientHasSubs = hasSubfolders(client);
+          const consolidated = getConsolidatedClientData(client);
+          const clientPending = consolidated.events.filter((e) => isPendingStatus(e.status)).length;
+
+          const wrapper = document.createElement("div");
+          wrapper.className = "rounded border border-[#e3decb] bg-white overflow-hidden mb-1";
+          wrapper.draggable = true;
+          wrapper.ondragstart = (e) => onDragStartClient(e, cName);
+          wrapper.ondragover = (e) => onDragOverClient(e);
+          wrapper.ondrop = (e) => onDropClient(e, cName);
+
+          if (!clientHasSubs) {
+            const isSelected = currentView === "CLIENT" && activeClient === cName;
+            const btn = document.createElement("button");
+            btn.onclick = () => openClient(cName, null);
+            btn.className = `w-full text-left px-3 py-2 text-sm flex items-center justify-between transition ${
+              isSelected
+                ? "bg-[#3b2d24] text-white font-semibold"
+                : "text-[#2b2621] hover:bg-[#eae5dc] font-medium"
+            }`;
+            btn.innerHTML = `
+            <span class="truncate pr-2">${client.name}</span>
+            ${clientPending > 0 ? `<span class="text-xs px-1.5 py-0.5 rounded font-semibold ${isSelected ? "bg-amber-400 text-zinc-950" : "bg-amber-100 text-amber-800 border border-amber-300"}">${clientPending}</span>` : ""}
+          `;
+            wrapper.appendChild(btn);
+          } else {
+            const isExpanded = !!expandedClients[cName];
+            const headerBtn = document.createElement("button");
+
+            headerBtn.onclick = () => {
+              if (expandedClients[cName]) {
+                // Se já estiver expandido, apenas recolhe a pasta na barra lateral
+                expandedClients[cName] = false;
+                renderSidebar();
+              } else {
+                // Se estiver recolhido, expande a pasta e abre a página Geral
+                openClient(cName, "GERAL");
+              }
+            };
+
+            headerBtn.className =
+              "w-full text-left px-3 py-2 text-sm font-semibold text-[#2b2621] hover:bg-[#eae5dc] flex items-center justify-between transition";
+            headerBtn.innerHTML = `
+            <div class="flex items-center gap-1.5 truncate pr-2">
+              <span class="text-xs text-[#6b6155]">${isExpanded ? "▾" : "▸"}</span>
+              <span class="truncate">${client.name}</span>
+            </div>
+            ${clientPending > 0 ? `<span class="text-xs bg-amber-100 text-amber-800 border border-amber-300 font-semibold px-1.5 py-0.5 rounded">${clientPending}</span>` : ""}
+          `;
+            wrapper.appendChild(headerBtn);
+
+            if (isExpanded) {
+              const subList = document.createElement("div");
+              subList.className = "border-t border-[#e3decb] bg-[#faf8f5] py-1 px-1.5 space-y-0.5";
+
+              const isGeralSelected =
+                currentView === "CLIENT" && activeClient === cName && activeSubfolder === "GERAL";
+              const geralBtn = document.createElement("button");
+              geralBtn.onclick = () => openClient(cName, "GERAL");
+              geralBtn.className = `w-full text-left pl-5 pr-2 py-1.5 rounded text-xs flex items-center justify-between transition ${
+                isGeralSelected
+                  ? "bg-[#3b2d24] text-white font-semibold"
+                  : "text-[#4a4038] hover:bg-[#eae5dc] font-medium"
+              }`;
+              geralBtn.innerHTML = `
+              <span class="truncate">📁 Geral</span>
+${clientPending > 0 ? `<span class="text-[11px] opacity-80">${clientPending}</span>` : ""}            `;
+              subList.appendChild(geralBtn);
+
+              Object.keys(client.subfolders).forEach((sfName) => {
+                const sf = client.subfolders[sfName];
+                const sfPending = (sf.events || []).filter((e) => isPendingStatus(e.status)).length;
+                const isSfSelected =
+                  currentView === "CLIENT" && activeClient === cName && activeSubfolder === sfName;
+
+                const sfBtn = document.createElement("button");
+                sfBtn.onclick = () => openClient(cName, sfName);
+                sfBtn.className = `w-full text-left pl-5 pr-2 py-1.5 rounded text-xs flex items-center justify-between transition ${
+                  isSfSelected
+                    ? "bg-[#3b2d24] text-white font-semibold"
+                    : "text-[#4a4038] hover:bg-[#eae5dc]"
+                }`;
+                sfBtn.innerHTML = `
+               <span class="truncate">${sf.status === "COMPLETO" ? "✅" : "📁"} ${sf.name}</span>
+${sfPending > 0 ? `<span class="text-[11px] opacity-80">${sfPending}</span>` : ""}              `;
+                subList.appendChild(sfBtn);
+              });
+
+              wrapper.appendChild(subList);
+            }
+          }
+
+          tree.appendChild(wrapper);
+        });
+      }
+
+      function selectView(view) {
+        currentView = view;
+        renderSidebar();
+        renderMain();
+      }
+
+      function openClient(cName, subfolderName) {
+        const client = state.clients[cName];
+        if (!client) return;
+        currentView = "CLIENT";
+        activeClient = cName;
+        showNewSubfolderInput = false;
+
+        if (hasSubfolders(client)) {
+          expandedClients[cName] = true;
+          activeSubfolder = subfolderName || "GERAL";
+        } else {
+          activeSubfolder = null;
+        }
+
+        renderSidebar();
+        renderMain();
+      }
+
+      function renderMain() {
+        const main = document.getElementById("mainContent");
+        if (currentView === "HOME") {
+          renderHome(main);
+        } else if (currentView === "ALL_PENDING") {
+          renderAllPending(main);
+        } else if (currentView === "ALL_HISTORY") {
+          renderAllHistory(main);
+        } else if (currentView === "CLIENT") {
+          renderClientView(main);
+        }
+      }
+
+      function renderHome(container) {
+        const clientNames = Object.keys(state.clients).sort();
+        const selectedCl =
+          window.quickClient && state.clients[window.quickClient]
+            ? window.quickClient
+            : clientNames[0] || "";
+        const clObj = selectedCl ? state.clients[selectedCl] : null;
+        const subNames = clObj && hasSubfolders(clObj) ? Object.keys(clObj.subfolders) : [];
+        const selectedSf =
+          window.quickSubfolder && subNames.includes(window.quickSubfolder)
+            ? window.quickSubfolder
+            : "";
+
+        container.innerHTML = `
+        <div class="max-w-4xl mx-auto space-y-6 pb-12">
+
+          <!-- TÍTULO E BOTÕES DE EXPORT/IMPORT -->
+          <div class="bg-white border border-[#e3decb] p-4 rounded-lg shadow-sm flex items-center justify-between">
+            <h1 class="text-lg font-bold text-[#2b2621] uppercase">REGISTRAR</h1>
+            <div class="flex gap-2">
+              <label title="Carregar arquivo JSON" class="cursor-pointer text-[10px] font-bold uppercase tracking-wider text-[#6b6155] bg-[#f8f6f0] hover:bg-[#e3decb] border border-[#d6cebc] px-2 py-1.5 rounded transition flex items-center gap-1">
+              Importar
+                <input type="file" accept=".json" class="hidden" onchange="importData(event)" />
+              </label>
+              <button onclick="exportData()" title="Salvar arquivo JSON no computador" class="text-[10px] font-bold uppercase tracking-wider text-[#6b6155] bg-[#f8f6f0] hover:bg-[#e3decb] border border-[#d6cebc] px-2 py-1.5 rounded transition flex items-center gap-1">
+                Salvar dados no pc
+              </button>
+            </div>
+          </div>
+
+          <!-- BLOCO DE AÇÕES RÁPIDAS -->
+          <div class="bg-white border border-[#e3decb] rounded-lg overflow-hidden shadow-sm">
+            <div class="grid grid-cols-2 sm:grid-cols-4 border-b border-[#e3decb] bg-[#f4f0e6]">
+              <button onclick="setHomeTab('TAREFA')" class="py-3 px-3 text-xs font-semibold uppercase tracking-wide border-r border-[#e3decb] transition ${homeTab === "TAREFA" ? "bg-[#3b2d24] text-white" : "text-[#4a4038] hover:bg-[#eae5dc]"}">
+                A fazer
+              </button>
+              <button onclick="setHomeTab('HISTORICO')" class="py-3 px-3 text-xs font-semibold uppercase tracking-wide border-r border-[#e3decb] transition ${homeTab === "HISTORICO" ? "bg-[#3b2d24] text-white" : "text-[#4a4038] hover:bg-[#eae5dc]"}">
+                Histórico
+              </button>
+              <button onclick="setHomeTab('ARQUIVO')" class="py-3 px-3 text-xs font-semibold uppercase tracking-wide border-r border-[#e3decb] transition ${homeTab === "ARQUIVO" ? "bg-[#3b2d24] text-white" : "text-[#4a4038] hover:bg-[#eae5dc]"}">
+                Arquivos
+              </button>
+              <button onclick="setHomeTab('CLIENTE')" class="py-3 px-3 text-xs font-semibold uppercase tracking-wide transition ${homeTab === "CLIENTE" ? "bg-[#3b2d24] text-white" : "text-[#4a4038] hover:bg-[#eae5dc]"}">
+                Novo Cliente
+              </button>
+            </div>
+
+            <div class="p-5">
+              ${homeTab === "CLIENTE" ? renderHomeNewClientTab() : renderHomeQuickEntryTab(clientNames, selectedCl, subNames, selectedSf)}
+            </div>
+          </div>
+
+        </div>
+      `;
+      }
+
+      function renderHomeQuickEntryTab(clientNames, selectedCl, subNames, selectedSf) {
+        return `
+        <form onsubmit="submitQuickHomeForm(event)" class="space-y-4">
+          <div class="grid grid-cols-1 ${subNames.length > 0 ? "sm:grid-cols-2" : ""} gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-[#6b6155] mb-1">Cliente</label>
+              <select id="qhClient" onchange="window.quickClient=this.value; window.quickSubfolder=''; renderMain();"
+                class="w-full bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc] focus:outline-none focus:border-[#3b2d24]">
+                ${clientNames.map((c) => `<option value="${c}" ${c === selectedCl ? "selected" : ""}>${c}</option>`).join("")}
+              </select>
+            </div>
+
+            ${
+              subNames.length > 0
+                ? `
+              <div>
+                <label class="block text-xs font-semibold text-[#6b6155] mb-1">Pasta</label>
+                <select id="qhSubfolder" onchange="window.quickSubfolder=this.value;"
+                  class="w-full bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc] focus:outline-none focus:border-[#3b2d24]">
+                  <option value="" ${selectedSf === "" ? "selected" : ""}>📁 Geral (Cliente)</option>
+                  ${subNames.map((sf) => `<option value="${sf}">${sf}</option>`).join("")}
+                </select>
+              </div>
+            `
+                : ""
+            }
+          </div>
+
+          ${
+            homeTab === "TAREFA"
+              ? `
+            <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <div class="sm:col-span-2">
+                <label class="block text-xs font-semibold text-[#6b6155] mb-1">Descrição</label>
+                <input type="text" id="qhText" placeholder="Digite a tarefa..."
+                  class="w-full bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc] focus:outline-none focus:border-[#3b2d24]" required />
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-[#6b6155] mb-1">Status</label>
+                <select id="qhStatus" class="w-full bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc]">
+                  <option value="A FAZER">A FAZER</option>
+                  <option value="EM ESPERA">EM ESPERA</option>
+                  <option value="EM ANDAMENTO">EM ANDAMENTO</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-[#6b6155] mb-1">Prazo</label>
+                <input type="date" id="qhDeadline" class="w-full bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc]" />
+              </div>
+            </div>
+          `
+              : ""
+          }
+
+          ${
+            homeTab === "HISTORICO"
+              ? `
+            <div>
+              <label class="block text-xs font-semibold text-[#6b6155] mb-1">Registro (${todayBR()})</label>
+              <textarea id="qhText" rows="2" placeholder="Digite o andamento..."
+                class="w-full bg-white text-sm text-[#2b2621] p-3 rounded border border-[#d6cebc] focus:outline-none focus:border-[#3b2d24]" required></textarea>
+            </div>
+          `
+              : ""
+          }
+
+          ${
+            homeTab === "ARQUIVO"
+              ? `
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-semibold text-[#6b6155] mb-1">Nome do Arquivo</label>
+                <input type="text" id="qhFileTitle" placeholder="Ex: Procuração"
+                  class="w-full bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc]" required />
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-[#6b6155] mb-1">Link</label>
+                <input type="url" id="qhFileUrl" placeholder="https://..."
+                  class="w-full bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc]" required />
+              </div>
+            </div>
+          `
+              : ""
+          }
+
+          <div class="flex items-center justify-between">
+            <span id="quickFeedback" class="text-xs font-medium text-[#065f46]"></span>
+            <button type="submit" class="bg-[#3b2d24] hover:bg-[#4f3d32] text-white text-xs font-semibold px-4 py-2.5 rounded transition">
+              Salvar
+            </button>
+          </div>
+        </form>
+      `;
+      }
+
+      function renderHomeNewClientTab() {
+        return `
+        <form onsubmit="createNewClientFromHome(event)" class="space-y-4">
+          <div>
+            <label class="block text-xs font-semibold text-[#6b6155] mb-1">Nome do Cliente</label>
+            <input type="text" id="ncName" placeholder="Digite o nome do cliente..."
+              class="w-full bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc] focus:outline-none focus:border-[#3b2d24]" required />
+          </div>
+          <div class="flex justify-end">
+            <button type="submit" class="bg-[#3b2d24] hover:bg-[#4f3d32] text-white text-xs font-semibold px-4 py-2.5 rounded transition">
+              Criar Cliente
+            </button>
+          </div>
+        </form>
+      `;
+      }
+
+      function setHomeTab(tab) {
+        homeTab = tab;
+        renderMain();
+      }
+
+      function submitQuickHomeForm(e) {
+        e.preventDefault();
+        const cName = document.getElementById("qhClient").value;
+        const sfSelect = document.getElementById("qhSubfolder");
+        const sfName = sfSelect ? sfSelect.value : "";
+        const client = state.clients[cName];
+        if (!client) return;
+
+        const target = sfName && client.subfolders[sfName] ? client.subfolders[sfName] : client;
+
+        if (homeTab === "TAREFA") {
+          const text = document.getElementById("qhText").value.trim();
+          const status = document.getElementById("qhStatus").value;
+          if (!text) return;
+          const deadline = document.getElementById("qhDeadline").value || undefined;
+          target.events.push({ id: "ev_" + Date.now(), date: todayBR(), text, status, deadline });
+        } else if (homeTab === "HISTORICO") {
+          const text = document.getElementById("qhText").value.trim();
+          if (!text) return;
+          target.events.push({ id: "ev_" + Date.now(), date: todayBR(), text, status: "COMPLETO" });
+        } else if (homeTab === "ARQUIVO") {
+          const title = document.getElementById("qhFileTitle").value.trim();
+          const url = document.getElementById("qhFileUrl").value.trim();
+          if (!title || !url) return;
+          target.files.push({ title, url });
+        }
+
+        saveState();
+        renderMain();
+        const fb = document.getElementById("quickFeedback");
+        if (fb) {
+          fb.textContent = "Salvo.";
+          setTimeout(() => {
+            if (document.getElementById("quickFeedback"))
+              document.getElementById("quickFeedback").textContent = "";
+          }, 2500);
+        }
+      }
+
+      function createNewClientFromHome(e) {
+        e.preventDefault();
+        const cName = document.getElementById("ncName").value.trim();
+        if (!cName) return;
+
+        if (!state.clients[cName]) {
+          state.clients[cName] = {
+            name: cName,
+            objective: "",
+            summary: "",
+            files: [],
+            events: [],
+            subfolders: {}
+          };
+        }
+        saveState();
+        openClient(cName, null);
+      }
+
+      // VISUALIZAÇÃO DO CLIENTE
+      function renderClientView(container) {
+        const client = state.clients[activeClient];
+        if (!client) {
+          selectView("HOME");
+          return;
+        }
+
+        const clientHasSubs = hasSubfolders(client);
+        if (clientHasSubs && !activeSubfolder) {
+          activeSubfolder = "GERAL";
+        }
+        if (!clientHasSubs) {
+          activeSubfolder = null;
+        }
+
+        const isConsolidatedView = clientHasSubs && activeSubfolder === "GERAL";
+        const currentTarget =
+          !clientHasSubs || isConsolidatedView ? client : client.subfolders[activeSubfolder];
+
+        let viewEvents = [];
+        let viewFiles = [];
+
+        if (isConsolidatedView) {
+          const consolidated = getConsolidatedClientData(client);
+          viewEvents = consolidated.events;
+          viewFiles = consolidated.files;
+        } else {
+          viewEvents = (currentTarget.events || []).map((ev) => ({
+            ...ev,
+            _origin: activeSubfolder
+          }));
+          viewFiles = (currentTarget.files || []).map((f, idx) => ({
+            ...f,
+            _origin: activeSubfolder,
+            _idx: idx
+          }));
+        }
+
+        const pendingEvents = sortByDeadline(viewEvents.filter((e) => isPendingStatus(e.status)));
+        const historyEvents = viewEvents
+          .filter((e) => !isPendingStatus(e.status))
+          .reverse()
+          .sort((a, b) => dmyKey(doneDate(b)).localeCompare(dmyKey(doneDate(a))));
+        const subfolderKeys = Object.keys(client.subfolders || {});
+
+        container.innerHTML = `
+        <div class="max-w-4xl mx-auto space-y-6 pb-16">
+
+          <!-- CABEÇALHO DO CLIENTE E BARRA DE SUBPASTAS -->
+          <div class="bg-white border border-[#e3decb] rounded-lg p-5 space-y-4 shadow-sm">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <h1 class="text-2xl font-bold text-[#2b2621]">
+                ${client.name}${activeSubfolder && activeSubfolder !== "GERAL" ? ` / 📁 ${activeSubfolder}` : isConsolidatedView ? " / 📁 Geral" : ""}
+              </h1>
+
+<div class="flex gap-2 no-print">
+  ${
+    activeSubfolder && activeSubfolder !== "GERAL"
+      ? `
+    <button onclick="toggleSubfolderComplete('${client.name}', '${activeSubfolder}')" class="text-[11px] font-semibold px-2 py-1.5 rounded transition ${currentTarget.status === "COMPLETO" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"}">
+      ${currentTarget.status === "COMPLETO" ? "↩ Reabrir" : "✓ Concluir"}
+    </button>
+    <button onclick="removeSubfolder('${client.name}', '${activeSubfolder}')" class="text-[11px] font-semibold bg-red-100 text-red-800 hover:bg-red-200 px-2 py-1.5 rounded transition">
+      🗑️ Apagar
+    </button>
+  `
+      : `
+    <button onclick="toggleNewSubfolderInput()" class="text-xs font-semibold bg-[#f4f0e6] hover:bg-[#eae5dc] text-[#2b2621] px-3 py-1.5 rounded transition">
+      + Nova Subpasta
+    </button>
+  `
+  }
+  <button onclick="window.print()" class="text-xs font-semibold bg-[#e3decb] hover:bg-[#d6cebc] text-[#2b2621] px-3 py-1.5 rounded transition">
+    🖨️ Imprimir
+  </button>
+</div>
+            </div>
+
+            ${
+              showNewSubfolderInput
+                ? `
+              <form onsubmit="createSubfolderInClient(event)" class="flex gap-2 pt-1">
+                <input type="text" id="newSubfolderName" placeholder="Nome da subpasta..."
+                  class="flex-1 bg-white text-sm text-[#2b2621] px-3 py-1.5 rounded border border-[#d6cebc] focus:outline-none focus:border-[#3b2d24]" required />
+                <button type="submit" class="bg-[#3b2d24] text-white text-xs font-semibold px-3 py-1.5 rounded">Criar</button>
+                <button type="button" onclick="toggleNewSubfolderInput()" class="text-xs text-[#6b6155] px-2">Cancelar</button>
+              </form>
+            `
+                : ""
+            }
+
+            ${
+              clientHasSubs
+                ? `
+              <div class="flex flex-wrap items-center gap-1.5 pt-2 border-t border-[#f4f0e6]">
+                <button onclick="openClient('${client.name}', 'GERAL')"
+                  class="px-3 py-1.5 rounded text-xs font-semibold transition ${
+                    activeSubfolder === "GERAL"
+                      ? "bg-[#3b2d24] text-white"
+                      : "bg-[#f4f0e6] text-[#4a4038] hover:bg-[#eae5dc]"
+                  }">
+                  📁 Geral
+                </button>
+                ${subfolderKeys
+                  .map(
+                    (sfName) => `
+                  <button onclick="openClient('${client.name}', '${sfName}')"
+                    class="px-3 py-1.5 rounded text-xs font-medium transition ${
+                      activeSubfolder === sfName
+                        ? "bg-[#3b2d24] text-white font-semibold"
+                        : "bg-[#f4f0e6] text-[#4a4038] hover:bg-[#eae5dc]"
+                    }">
+                    📁 ${sfName}
+                  </button>
+                `
+                  )
+                  .join("")}
+              </div>
+            `
+                : ""
+            }
+          </div>
+
+          <!-- OBJETIVO & RESUMO -->
+          <div class="bg-white border border-[#e3decb] p-5 rounded-lg space-y-4 shadow-sm">
+            <div>
+              <label class="block text-xs font-semibold uppercase text-[#6b6155] mb-1">Objetivo:</label>
+              <input type="text" value="${currentTarget.objective || ""}" onchange="updateTargetField('objective', this.value)"
+                placeholder="Objetivo..."
+                class="w-full bg-[#faf8f5] text-sm text-[#2b2621] px-3 py-2 rounded border border-[#e3decb] focus:bg-white focus:outline-none focus:border-[#3b2d24]" />
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold uppercase text-[#6b6155] mb-1">Resumo do caso:</label>
+              <textarea rows="3" onchange="updateTargetField('summary', this.value)"
+                placeholder="Resumo..."
+                class="w-full bg-[#faf8f5] text-sm text-[#2b2621] p-3 rounded border border-[#e3decb] focus:bg-white focus:outline-none focus:border-[#3b2d24] leading-relaxed">${currentTarget.summary || ""}</textarea>
+            </div>
+
+            <div>
+  <label class="block text-xs font-semibold uppercase text-[#6b6155] mb-1">Observações:</label>
+  <textarea rows="3" onchange="updateTargetField('notes', this.value)"
+    placeholder="Observações adicionais..."
+    class="w-full bg-[#faf8f5] text-sm text-[#2b2621] p-3 rounded border border-[#e3decb] focus:bg-white focus:outline-none focus:border-[#3b2d24] leading-relaxed">${currentTarget.notes || ""}</textarea>
+</div>
+
+            ${
+              isConsolidatedView
+                ? `
+              ${subfolderKeys
+                .filter((k) => client.subfolders[k].objective || client.subfolders[k].summary)
+                .map((sfName) => {
+                  const sf = client.subfolders[sfName];
+                  return `
+                  <div class="pt-3 border-t border-[#f4f0e6] text-xs space-y-1">
+                    <div class="font-semibold text-[#4a4038]">📁 ${sfName}</div>
+                    ${sf.objective ? `<div class="text-[#6b6155]"><span class="font-medium">Objetivo:</span> ${sf.objective}</div>` : ""}
+                    ${sf.summary ? `<div class="text-[#6b6155]">${sf.summary}</div>` : ""}
+                  </div>
+                `;
+                })
+                .join("")}
+            `
+                : ""
+            }
+          </div>
+
+          <!-- SEÇÃO REGISTRAR (ADICIONAR TAREFA / HISTÓRICO / ARQUIVO) -->
+          <div class="bg-white border border-[#e3decb] p-5 rounded-lg space-y-5 shadow-sm">
+            <h2 class="text-xs font-bold uppercase tracking-wider text-[#3b2d24]">REGISTRAR</h2>
+
+            <!-- A FAZER -->
+            <div class="space-y-3 pt-1">
+              <h3 class="text-xs font-semibold uppercase text-[#6b6155]">A fazer:</h3>
+<form onsubmit="addTaskInView(event)" class="flex flex-wrap sm:flex-nowrap gap-2 no-print">                ${
+          isConsolidatedView
+            ? `
+                  <select id="newTaskOrigin" class="bg-white text-xs text-[#2b2621] px-2.5 py-2 rounded border border-[#d6cebc]">
+                    <option value="">📁 Geral</option>
+                    ${subfolderKeys.map((sf) => `<option value="${sf}">${sf}</option>`).join("")}
+                  </select>
+                `
+            : ""
+        }
+                <input type="text" id="newTaskText" placeholder="Nova tarefa..."
+                  class="flex-1 bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc] focus:outline-none focus:border-[#3b2d24]" required />
+                <select id="newTaskStatus" class="bg-white text-xs font-medium text-[#2b2621] px-2.5 py-2 rounded border border-[#d6cebc]">
+                  <option value="A FAZER">A FAZER</option>
+                  <option value="EM ESPERA">EM ESPERA</option>
+                  <option value="EM ANDAMENTO">EM ANDAMENTO</option>
+                </select>
+                <input type="date" id="newTaskDeadline" title="Prazo (opcional)"
+                  class="bg-white text-xs text-[#2b2621] px-2.5 py-2 rounded border border-[#d6cebc]" />
+                <button type="submit" class="bg-[#3b2d24] hover:bg-[#4f3d32] text-white text-xs font-semibold px-4 py-2 rounded transition shrink-0">
+                  Adicionar
+                </button>
+              </form>
+
+              ${
+                pendingEvents.length === 0
+                  ? `
+                <p class="text-xs text-[#6b6155]">Nenhuma pendência.</p>
+              `
+                  : `
+                <div class="space-y-2">
+                  ${pendingEvents
+                    .map(
+                      (ev) => `
+                    <div class="flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 bg-[#faf8f5] border border-[#e3decb] p-3 rounded">
+                      <div class="space-y-1 flex-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                          <span class="text-xs font-medium text-[#6b6155]">${ev.date}</span>
+                          ${
+                            isConsolidatedView && ev._origin
+                              ? `
+                            <button onclick="openClient('${client.name}', '${ev._origin}')" class="text-[11px] bg-[#f4f0e6] text-[#4a4038] px-2 py-0.5 rounded font-medium hover:bg-[#eae5dc]">
+                              📁 ${ev._origin}
+                            </button>
+                          `
+                              : ""
+                          }
+                          <select onchange="changeEventStatus('${ev._origin || ""}', '${ev.id}', this.value)"
+                            class="text-[11px] font-semibold px-2 py-0.5 rounded border ${statusBadgeStyle(ev.status)} cursor-pointer">
+                            <option value="A FAZER" ${ev.status === "A FAZER" ? "selected" : ""}>A FAZER</option>
+                            <option value="EM ESPERA" ${ev.status === "EM ESPERA" ? "selected" : ""}>EM ESPERA</option>
+                            <option value="EM ANDAMENTO" ${ev.status === "EM ANDAMENTO" ? "selected" : ""}>EM ANDAMENTO</option>
+                          </select>
+                          ${deadlineInput(client.name, ev)}
+                        </div>
+                        <p class="text-sm text-[#2b2621] whitespace-pre-line">${ev.text}</p>
+                      </div>
+
+                      <div class="flex items-center gap-2 shrink-0">
+                        <button onclick="markComplete('${ev._origin || ""}', '${ev.id}')"
+                          class="bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-medium px-3 py-1.5 rounded transition">
+                          Concluir
+                        </button>
+                        <button onclick="deleteEvent('${ev._origin || ""}', '${ev.id}')" class="text-[#8c8275] hover:text-[#9b2c2c] px-1.5 text-xs">✕</button>
+                      </div>
+                    </div>
+                  `
+                    )
+                    .join("")}
+                </div>
+              `
+              }
+            </div>
+
+            <!-- HISTÓRICO -->
+            <div class="space-y-3 pt-3 border-t border-[#f4f0e6]">
+              <h3 class="text-xs font-semibold uppercase text-[#6b6155]">Histórico:</h3>
+              <form onsubmit="addHistoryInView(event)" class="flex flex-wrap sm:flex-nowrap gap-2">
+                ${
+                  isConsolidatedView
+                    ? `
+                  <select id="newHistoryOrigin" class="bg-white text-xs text-[#2b2621] px-2.5 py-2 rounded border border-[#d6cebc]">
+                    <option value="">📁 Geral</option>
+                    ${subfolderKeys.map((sf) => `<option value="${sf}">${sf}</option>`).join("")}
+                  </select>
+                `
+                    : ""
+                }
+                <input type="text" id="newHistoryText" placeholder="Novo registro no histórico..."
+                  class="flex-1 bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc] focus:outline-none focus:border-[#3b2d24]" required />
+                <button type="submit" class="bg-[#3b2d24] hover:bg-[#4f3d32] text-white text-xs font-semibold px-4 py-2 rounded transition shrink-0">
+                  Adicionar
+                </button>
+              </form>
+
+              <div class="space-y-2">
+                ${historyEvents
+                  .map(
+                    (ev) => `
+                  <div class="bg-[#faf8f5] border border-[#e3decb] p-3 rounded flex items-start justify-between gap-3">
+                    <div class="space-y-0.5">
+                      <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold text-[#6b6155]">${doneLabel(ev)}</span>
+                        ${
+                          isConsolidatedView && ev._origin
+                            ? `
+                          <span class="text-[11px] bg-[#f4f0e6] text-[#4a4038] px-1.5 py-0.5 rounded">📁 ${ev._origin}</span>
+                        `
+                            : ""
+                        }
+                      </div>
+                      <p class="text-sm text-[#2b2621] whitespace-pre-line">${ev.text}</p>
+                    </div>
+                    <button onclick="deleteEvent('${ev._origin || ""}', '${ev.id}')" class="text-[#8c8275] hover:text-[#9b2c2c] px-1.5 text-xs">✕</button>
+                  </div>
+                `
+                  )
+                  .join("")}
+              </div>
+            </div>
+
+            <!-- ARQUIVOS -->
+            <div class="space-y-3 pt-3 border-t border-[#f4f0e6]">
+              <h3 class="text-xs font-semibold uppercase text-[#6b6155]">Arquivos:</h3>
+              <div class="space-y-1.5">
+                ${viewFiles
+                  .map(
+                    (f) => `
+                  <div class="flex items-center justify-between bg-[#faf8f5] border border-[#e3decb] px-3 py-2 rounded">
+                    <div class="flex items-center gap-2 truncate pr-2">
+                      ${isConsolidatedView && f._origin ? `<span class="text-[11px] bg-[#f4f0e6] text-[#4a4038] px-1.5 py-0.5 rounded">📁 ${f._origin}</span>` : ""}
+                      <a href="${f.url}" target="_blank" class="text-sm font-medium text-[#0369a1] hover:underline truncate">${f.title}</a>
+                    </div>
+                    <button onclick="removeFile('${f._origin || ""}', ${f._idx})" class="text-xs text-[#8c8275] hover:text-[#9b2c2c]">✕</button>
+                  </div>
+                `
+                  )
+                  .join("")}
+              </div>
+
+              <form onsubmit="addFileInView(event)" class="flex flex-wrap sm:flex-nowrap gap-2">
+                ${
+                  isConsolidatedView
+                    ? `
+                  <select id="newFileOrigin" class="bg-white text-xs text-[#2b2621] px-2.5 py-2 rounded border border-[#d6cebc]">
+                    <option value="">📁 Geral</option>
+                    ${subfolderKeys.map((sf) => `<option value="${sf}">${sf}</option>`).join("")}
+                  </select>
+                `
+                    : ""
+                }
+                <input type="text" id="fileTitle" placeholder="Nome do arquivo" class="bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc] flex-1" required />
+                <input type="url" id="fileUrl" placeholder="Link (https://...)" class="bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc] flex-1" required />
+                <button type="submit" class="bg-[#3b2d24] hover:bg-[#4f3d32] text-white text-xs font-semibold px-4 py-2 rounded shrink-0">Adicionar</button>
+              </form>
+            </div>
+
+          </div>
+
+          ${renderFinanceSection(client)}
+
+        </div>
+      `;
+      }
+
+      function renderFinanceSection(client) {
+        const fin = client.finance || { gastos: [], receitas: [] };
+        const sum = (list) => list.reduce((t, i) => t + i.value, 0);
+        const saldo = sum(fin.receitas) - sum(fin.gastos);
+        const input =
+          "bg-white text-sm text-[#2b2621] px-3 py-2 rounded border border-[#d6cebc] focus:outline-none focus:border-[#3b2d24]";
+
+        const column = (type, title, list) => `
+        <div class="space-y-3">
+          <h3 class="text-xs font-semibold uppercase text-[#6b6155]">${title}: ${money(sum(list))}</h3>
+          <form onsubmit="addFinance('${type}', event)" class="flex flex-wrap gap-2">
+            <input type="text" name="desc" placeholder="Descrição..." class="flex-1 min-w-[8rem] ${input}" required />
+            <input type="number" name="value" step="0.01" min="0" placeholder="Valor" class="w-28 ${input}" required />
+            <input type="date" name="date" value="${todayISO()}" class="${input}" required />
+            <button type="submit" class="bg-[#3b2d24] hover:bg-[#4f3d32] text-white text-xs font-semibold px-4 py-2 rounded shrink-0">Adicionar</button>
+          </form>
+          <div class="space-y-1.5">
+            ${[...list]
+              .sort((a, b) => b.date.localeCompare(a.date))
+              .map(
+                (i) => `
+              <div class="flex items-center justify-between gap-2 bg-[#faf8f5] border border-[#e3decb] px-3 py-2 rounded">
+                <div class="min-w-0">
+                  <span class="text-xs text-[#6b6155]">${isoToBR(i.date)}</span>
+                  <p class="text-sm text-[#2b2621] truncate">${i.desc}</p>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <span class="text-sm font-semibold text-[#2b2621]">${money(i.value)}</span>
+                  <button onclick="deleteFinance('${type}', '${i.id}')" class="text-[#8c8275] hover:text-[#9b2c2c] px-1.5 text-xs">✕</button>
+                </div>
+              </div>
+            `
+              )
+              .join("")}
+          </div>
+        </div>
+      `;
+
+        return `
+        <div class="bg-white border border-[#e3decb] p-5 rounded-lg space-y-5 shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h2 class="text-xs font-bold uppercase tracking-wider text-[#3b2d24]">FINANÇAS</h2>
+            <span class="text-sm font-bold ${saldo < 0 ? "text-[#9b2c2c]" : "text-[#065f46]"}">Saldo: ${money(saldo)}</span>
+          </div>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            ${column("receitas", "Receitas", fin.receitas)}
+            ${column("gastos", "Gastos", fin.gastos)}
+          </div>
+        </div>
+      `;
+      }
+
+      function renderAllPending(container) {
+        const pendingItems = [];
+        Object.keys(state.clients)
+          .sort()
+          .forEach((cName) => {
+            const cl = state.clients[cName];
+            const consolidated = getConsolidatedClientData(cl);
+            consolidated.events.forEach((ev) => {
+              if (isPendingStatus(ev.status)) {
+                pendingItems.push({ client: cName, origin: ev._origin, ...ev });
+              }
+            });
+          });
+
+        container.innerHTML = `
+        <div class="max-w-4xl mx-auto space-y-4 pb-16">
+          <div class="bg-white border border-[#e3decb] p-4 rounded-lg flex items-center justify-between shadow-sm">
+            <h1 class="text-lg font-bold text-[#2b2621]">A fazer (${pendingItems.length})</h1>
+          </div>
+
+          <div class="space-y-2">
+            ${sortByDeadline(pendingItems)
+              .map(
+                (item) => `
+              <div class="bg-white border border-[#e3decb] p-3.5 rounded-lg flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 shadow-sm">
+                <div class="space-y-1 flex-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button onclick="openClient('${item.client}', ${item.origin ? `'${item.origin}'` : hasSubfolders(state.clients[item.client]) ? "'GERAL'" : "null"})"
+                      class="text-sm font-bold text-[#2b2621] hover:underline">
+                      ${item.client}${item.origin ? ` / 📁 ${item.origin}` : ""}
+                    </button>
+                    <span class="text-xs text-[#6b6155]">${item.date}</span>
+                    <span class="text-[11px] px-2 py-0.5 rounded border font-semibold ${statusBadgeStyle(item.status)}">${item.status}</span>
+                    ${deadlineInput(item.client, item)}
+                  </div>
+                  <p class="text-sm text-[#2b2621] whitespace-pre-line">${item.text}</p>
+                </div>
+                <button onclick="markCompleteGlobal('${item.client}', '${item.origin || ""}', '${item.id}')"
+                  class="bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-medium px-3 py-1.5 rounded transition shrink-0">
+                  Concluir
+                </button>
+              </div>
+            `
+              )
+              .join("")}
+          </div>
+        </div>
+      `;
+      }
+
+      function renderAllHistory(container) {
+        const allHistory = [];
+        Object.keys(state.clients)
+          .sort()
+          .forEach((cName) => {
+            getConsolidatedClientData(state.clients[cName]).events.forEach((ev, i) => {
+              if (isPendingStatus(ev.status)) return;
+              allHistory.push({
+                client: cName,
+                origin: ev._origin,
+                key: dmyKey(doneDate(ev)),
+                i,
+                ...ev
+              });
+            });
+          });
+        allHistory.sort((a, b) => b.key.localeCompare(a.key) || b.i - a.i);
+
+        container.innerHTML = `
+        <div class="max-w-4xl mx-auto space-y-4 pb-16">
+          <div class="bg-white border border-[#e3decb] p-4 rounded-lg shadow-sm">
+            <h1 class="text-lg font-bold text-[#2b2621]">Histórico Geral (${allHistory.length})</h1>
+          </div>
+
+          <div class="space-y-2">
+            ${allHistory
+              .map(
+                (item) => `
+              <div class="bg-[#faf8f5] border border-[#e3decb] p-3 rounded space-y-0.5">
+                <div class="flex flex-wrap items-center gap-2">
+                  <button onclick="openClient('${item.client}', ${item.origin ? `'${item.origin}'` : hasSubfolders(state.clients[item.client]) ? "'GERAL'" : "null"})"
+                    class="text-sm font-bold text-[#2b2621] hover:underline">
+                    ${item.client}${item.origin ? ` / 📁 ${item.origin}` : ""}
+                  </button>
+                  <span class="text-xs font-semibold text-[#6b6155]">${doneLabel(item)}</span>
+                  <span class="text-[11px] px-2 py-0.5 rounded border font-semibold ${statusBadgeStyle(item.status)}">${item.status}</span>
+                </div>
+                <p class="text-sm text-[#2b2621] whitespace-pre-line">${item.text}</p>
+              </div>
+            `
+              )
+              .join("")}
+          </div>
+        </div>
+      `;
+      }
+
+      function toggleNewSubfolderInput() {
+        showNewSubfolderInput = !showNewSubfolderInput;
+        renderMain();
+        if (showNewSubfolderInput) {
+          const inp = document.getElementById("newSubfolderName");
+          if (inp) inp.focus();
+        }
+      }
+
+      function createSubfolderInClient(e) {
+        e.preventDefault();
+        const name = document.getElementById("newSubfolderName").value.trim();
+        if (!name) return;
+        const client = state.clients[activeClient];
+        client.subfolders = client.subfolders || {};
+        if (!client.subfolders[name]) {
+          client.subfolders[name] = {
+            name,
+            objective: "",
+            summary: "",
+            files: [],
+            events: []
+          };
+        }
+        showNewSubfolderInput = false;
+        expandedClients[activeClient] = true;
+        activeSubfolder = name;
+        saveState();
+        renderMain();
+      }
+
+      function getTargetContainer(clientName, originSubfolder) {
+        const cl = state.clients[clientName];
+        if (!cl) return null;
+        if (originSubfolder && cl.subfolders && cl.subfolders[originSubfolder]) {
+          return cl.subfolders[originSubfolder];
+        }
+        return cl;
+      }
+
+      function updateTargetField(field, val) {
+        const cl = state.clients[activeClient];
+        const target =
+          activeSubfolder && activeSubfolder !== "GERAL" ? cl.subfolders[activeSubfolder] : cl;
+        target[field] = val;
+        saveState();
+      }
+
+      function addTaskInView(e) {
+        e.preventDefault();
+        const text = document.getElementById("newTaskText").value.trim();
+        const status = document.getElementById("newTaskStatus").value;
+        const originSelect = document.getElementById("newTaskOrigin");
+        const origin = originSelect
+          ? originSelect.value
+          : activeSubfolder !== "GERAL"
+            ? activeSubfolder
+            : "";
+        if (!text) return;
+
+        const target = getTargetContainer(activeClient, origin);
+        const deadline = document.getElementById("newTaskDeadline").value || undefined;
+        target.events.push({ id: "ev_" + Date.now(), date: todayBR(), text, status, deadline });
+        saveState();
+        renderMain();
+      }
+
+      function addHistoryInView(e) {
+        e.preventDefault();
+        const text = document.getElementById("newHistoryText").value.trim();
+        const originSelect = document.getElementById("newHistoryOrigin");
+        const origin = originSelect
+          ? originSelect.value
+          : activeSubfolder !== "GERAL"
+            ? activeSubfolder
+            : "";
+        if (!text) return;
+
+        const target = getTargetContainer(activeClient, origin);
+        target.events.push({ id: "ev_" + Date.now(), date: todayBR(), text, status: "COMPLETO" });
+        saveState();
+        renderMain();
+      }
+
+      function changeEventStatus(originSubfolder, eventId, newStatus) {
+        const target = getTargetContainer(activeClient, originSubfolder);
+        const ev = target.events.find((e) => e.id === eventId);
+        if (ev) {
+          ev.status = newStatus;
+          saveState();
+          renderMain();
+        }
+      }
+
+      function completeEvent(cName, originSubfolder, eventId) {
+        const ev = getTargetContainer(cName, originSubfolder).events.find((e) => e.id === eventId);
+        ev.status = "COMPLETO";
+        ev.doneDate = todayBR();
+        saveState();
+        renderMain();
+      }
+
+      function markComplete(originSubfolder, eventId) {
+        completeEvent(activeClient, originSubfolder, eventId);
+      }
+
+      function markCompleteGlobal(cName, originSubfolder, eventId) {
+        completeEvent(cName, originSubfolder, eventId);
+      }
+
+      function setDeadline(cName, originSubfolder, eventId, value) {
+        const ev = getTargetContainer(cName, originSubfolder).events.find((e) => e.id === eventId);
+        if (value) ev.deadline = value;
+        else delete ev.deadline;
+        saveState();
+        renderMain();
+      }
+
+      function addFinance(type, e) {
+        e.preventDefault();
+        const cl = state.clients[activeClient];
+        if (!cl.finance) cl.finance = { gastos: [], receitas: [] };
+        const f = e.target.elements;
+        cl.finance[type].push({
+          id: "fin_" + Date.now(),
+          desc: f.desc.value.trim(),
+          value: Number(f.value.value),
+          date: f.date.value
+        });
+        saveState();
+        renderMain();
+      }
+
+      function deleteFinance(type, id) {
+        const cl = state.clients[activeClient];
+        cl.finance[type] = cl.finance[type].filter((i) => i.id !== id);
+        saveState();
+        renderMain();
+      }
+
+      function deleteEvent(originSubfolder, eventId) {
+        const target = getTargetContainer(activeClient, originSubfolder);
+        target.events = target.events.filter((e) => e.id !== eventId);
+        saveState();
+        renderMain();
+      }
+
+      function addFileInView(e) {
+        e.preventDefault();
+        const title =
+          document.getElementById("fileTitle").value.txt ||
+          document.getElementById("fileTitle").value.trim();
+        const url = document.getElementById("fileUrl").value.trim();
+        const originSelect = document.getElementById("newFileOrigin");
+        const origin = originSelect
+          ? originSelect.value
+          : activeSubfolder !== "GERAL"
+            ? activeSubfolder
+            : "";
+        if (!title || !url) return;
+
+        const target = getTargetContainer(activeClient, origin);
+        target.files.push({ title, url });
+        saveState();
+        renderMain();
+      }
+
+      function removeFile(originSubfolder, idx) {
+        const target = getTargetContainer(activeClient, originSubfolder);
+        target.files.splice(idx, 1);
+        saveState();
+        renderMain();
+      }
+
+      renderSidebar();
+      renderMain();
+    </script>
+  </body>
+</html>
