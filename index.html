@@ -7,13 +7,13 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
       :root {
-        --bg-main: #f8f6f0;
-        --bg-card: #ffffff;
-        --border-color: #e3decb;
+        --bg-main: #f3efe3;
+        --bg-card: #f8dcdc;
+        --border-color: #2b281f;
         --text-main: #2b2621;
         --text-muted: #6b6155;
-        --accent-dark: #3b2d24;
-        --accent-hover: #4f3d32;
+        --accent-dark: #422411;
+        --accent-hover: #53280d;
       }
       body {
         font-family:
@@ -111,6 +111,14 @@
     </aside>
 
     <!-- ÁREA PRINCIPAL -->
+    <!-- ADD THIS JUST BEFORE </main> -->
+    <button
+      id="globalMicBtn"
+      title="Ditar texto (Clique em um campo primeiro)"
+      class="fixed bottom-6 right-6 z-50 p-4 rounded-full shadow-lg bg-[#3b2d24] text-white hover:bg-[#4f3d32] transition flex items-center justify-center"
+    >
+      🎤
+    </button>
     <main id="mainContent" class="flex-1 overflow-y-auto p-6 md:p-8"></main>
 
     <script>
@@ -763,9 +771,23 @@ ${sfPending > 0 ? `<span class="text-[11px] opacity-80">${sfPending}</span>` : "
           <!-- CABEÇALHO DO CLIENTE E BARRA DE SUBPASTAS -->
           <div class="bg-white border border-[#e3decb] rounded-lg p-5 space-y-4 shadow-sm">
             <div class="flex flex-wrap items-center justify-between gap-3">
-              <h1 class="text-2xl font-bold text-[#2b2621]">
-                ${client.name}${activeSubfolder && activeSubfolder !== "GERAL" ? ` / 📁 ${activeSubfolder}` : isConsolidatedView ? " / 📁 Geral" : ""}
-              </h1>
+<h1 class="text-2xl font-bold text-[#2b2621] flex items-center flex-wrap gap-1">
+  <span id="clientNameSpan" class="focus:outline-none focus:bg-white focus:shadow-inner px-1 rounded border-b-2 border-transparent focus:border-[#3b2d24] transition-all" contenteditable="false">${client.name}</span>
+  <button id="clientNameEditBtn" onclick="editClientNameInline()" class="text-sm opacity-40 hover:opacity-100 no-print cursor-pointer mr-2" title="Renomear Cliente">✏️</button>
+  
+  ${
+    activeSubfolder && activeSubfolder !== "GERAL"
+      ? `
+    <span class="text-[#6b6155] font-normal mx-1">/</span>
+    <span class="text-[#2b2621]">${currentTarget.status === "COMPLETO" ? "✅" : "📁"}</span>
+    <span id="subfolderNameSpan" class="focus:outline-none focus:bg-white focus:shadow-inner px-1 rounded border-b-2 border-transparent focus:border-[#3b2d24] transition-all" contenteditable="false">${activeSubfolder}</span>
+    <button id="subfolderNameEditBtn" onclick="editSubfolderNameInline()" class="text-sm opacity-40 hover:opacity-100 no-print cursor-pointer" title="Renomear Subpasta">✏️</button>
+  `
+      : isConsolidatedView
+        ? `<span class="text-[#6b6155] font-normal mx-1">/ 📁 Geral</span>`
+        : ""
+  }
+</h1>
 
 <div class="flex gap-2 no-print">
   ${
@@ -1373,6 +1395,266 @@ ${sfPending > 0 ? `<span class="text-[11px] opacity-80">${sfPending}</span>` : "
         saveState();
         renderMain();
       }
+
+      function renameClient(oldName) {
+        const newName = prompt("Novo nome do cliente:", oldName);
+        if (!newName || newName.trim() === "" || newName === oldName) return;
+        if (state.clients[newName]) return alert("Já existe um cliente com este nome.");
+
+        // Atualiza os dados do cliente
+        state.clients[newName] = state.clients[oldName];
+        state.clients[newName].name = newName;
+        delete state.clients[oldName];
+
+        // Atualiza a ordem (caso use Drag and Drop)
+        if (state.clientOrder) {
+          const idx = state.clientOrder.indexOf(oldName);
+          if (idx !== -1) state.clientOrder[idx] = newName;
+        }
+
+        // Atualiza variáveis de interface
+        if (activeClient === oldName) activeClient = newName;
+        if (expandedClients[oldName]) {
+          expandedClients[newName] = true;
+          delete expandedClients[oldName];
+        }
+
+        saveState();
+        renderSidebar();
+        renderMain();
+      }
+
+      function renameSubfolder(cName, oldSfName) {
+        const newName = prompt("Novo nome da subpasta:", oldSfName);
+        if (!newName || newName.trim() === "" || newName === oldSfName) return;
+        if (newName.toUpperCase() === "GERAL") return alert("Este nome é reservado.");
+        if (state.clients[cName].subfolders[newName])
+          return alert("Já existe uma subpasta com este nome.");
+
+        state.clients[cName].subfolders[newName] = state.clients[cName].subfolders[oldSfName];
+        state.clients[cName].subfolders[newName].name = newName;
+        delete state.clients[cName].subfolders[oldSfName];
+
+        if (activeSubfolder === oldSfName) activeSubfolder = newName;
+
+        saveState();
+        renderSidebar();
+        renderMain();
+      }
+
+      function editClientNameInline() {
+        const span = document.getElementById("clientNameSpan");
+        const btn = document.getElementById("clientNameEditBtn");
+        const oldName = span.innerText.trim();
+
+        span.contentEditable = "true";
+        span.focus();
+
+        // Seleciona todo o texto automaticamente
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(span);
+        selection.removeAllRanges();
+        selection.addRange(range);
+
+        btn.style.display = "none"; // Esconde o lápis enquanto digita
+
+        span.onkeydown = function (e) {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            span.blur(); // Salva ao apertar Enter
+          }
+        };
+
+        span.onblur = function () {
+          span.contentEditable = "false";
+          btn.style.display = "inline-block";
+          const newName = span.innerText.trim();
+
+          if (!newName || newName === oldName) {
+            span.innerText = oldName;
+            return;
+          }
+          if (state.clients[newName]) {
+            alert("Já existe um cliente com este nome.");
+            span.innerText = oldName;
+            return;
+          }
+
+          // Lógica de salvar
+          state.clients[newName] = state.clients[oldName];
+          state.clients[newName].name = newName;
+          delete state.clients[oldName];
+
+          if (state.clientOrder) {
+            const idx = state.clientOrder.indexOf(oldName);
+            if (idx !== -1) state.clientOrder[idx] = newName;
+          }
+
+          if (activeClient === oldName) activeClient = newName;
+          if (expandedClients[oldName]) {
+            expandedClients[newName] = true;
+            delete expandedClients[oldName];
+          }
+
+          saveState();
+          renderSidebar();
+          renderMain();
+        };
+      }
+
+      function editSubfolderNameInline() {
+        const span = document.getElementById("subfolderNameSpan");
+        const btn = document.getElementById("subfolderNameEditBtn");
+        const oldName = span.innerText.trim();
+        const cName = activeClient;
+
+        span.contentEditable = "true";
+        span.focus();
+
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(span);
+        selection.removeAllRanges();
+        selection.addRange(range);
+
+        btn.style.display = "none";
+
+        span.onkeydown = function (e) {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            span.blur();
+          }
+        };
+
+        span.onblur = function () {
+          span.contentEditable = "false";
+          btn.style.display = "inline-block";
+          const newName = span.innerText.trim();
+
+          if (!newName || newName === oldName) {
+            span.innerText = oldName;
+            return;
+          }
+          if (newName.toUpperCase() === "GERAL") {
+            alert("Este nome é reservado.");
+            span.innerText = oldName;
+            return;
+          }
+          if (state.clients[cName].subfolders[newName]) {
+            alert("Já existe uma subpasta com este nome.");
+            span.innerText = oldName;
+            return;
+          }
+
+          state.clients[cName].subfolders[newName] = state.clients[cName].subfolders[oldName];
+          state.clients[cName].subfolders[newName].name = newName;
+          delete state.clients[cName].subfolders[oldName];
+
+          if (activeSubfolder === oldName) activeSubfolder = newName;
+
+          saveState();
+          renderSidebar();
+          renderMain();
+        };
+      }
+
+      // ADD THIS JUST BEFORE renderSidebar(); renderMain();
+
+      function setupVoiceTyping() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+          if (document.getElementById("globalMicBtn"))
+            document.getElementById("globalMicBtn").style.display = "none";
+          return;
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.lang = "pt-BR";
+        recognition.interimResults = false;
+        recognition.continuous = true; // 1. Set to continuous listening
+
+        const micBtn = document.getElementById("globalMicBtn");
+        let isListening = false;
+        let lastFocusedInput = null;
+        let manualStop = false; // Tracker to distinguish manual click from browser timeout
+
+        document.addEventListener("focusin", (e) => {
+          if (
+            e.target.tagName === "INPUT" ||
+            e.target.tagName === "TEXTAREA" ||
+            e.target.isContentEditable
+          ) {
+            lastFocusedInput = e.target;
+          }
+        });
+
+        micBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+
+          if (!lastFocusedInput) {
+            alert("Por favor, clique dentro de um campo de texto primeiro para começar a ditar.");
+            return;
+          }
+
+          if (isListening) {
+            manualStop = true; // User explicitly clicked to stop
+            recognition.stop();
+            return;
+          }
+
+          manualStop = false;
+          lastFocusedInput.focus();
+          recognition.start();
+        });
+
+        recognition.onstart = () => {
+          isListening = true;
+          micBtn.classList.remove("bg-[#3b2d24]", "hover:bg-[#4f3d32]");
+          micBtn.classList.add("bg-red-600", "animate-pulse");
+        };
+
+        recognition.onresult = (event) => {
+          // 2. Grab only the latest phrase recognized, not the whole session
+          const current = event.resultIndex;
+          const transcript = event.results[current][0].transcript;
+          const activeEl = lastFocusedInput;
+
+          if (activeEl) {
+            if (activeEl.isContentEditable) {
+              activeEl.innerText = (activeEl.innerText + " " + transcript).trim();
+            } else if (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA") {
+              if (activeEl.value.length > 0 && !activeEl.value.endsWith(" ")) {
+                activeEl.value += " " + transcript;
+              } else {
+                activeEl.value += transcript;
+              }
+            }
+
+            activeEl.dispatchEvent(new Event("input", { bubbles: true }));
+            activeEl.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        };
+
+        recognition.onend = () => {
+          // 3. If the browser timed out but the user didn't click stop, auto-restart
+          if (!manualStop) {
+            recognition.start();
+          } else {
+            isListening = false;
+            micBtn.classList.add("bg-[#3b2d24]", "hover:bg-[#4f3d32]");
+            micBtn.classList.remove("bg-red-600", "animate-pulse");
+          }
+        };
+
+        recognition.onerror = (event) => {
+          if (event.error === "not-allowed") {
+            manualStop = true; // Stop permanently if microphone access is denied
+          }
+        };
+      }
+
+      setupVoiceTyping();
 
       renderSidebar();
       renderMain();
